@@ -77,6 +77,10 @@ import qualified Data.List as L (filter, foldl', partition, find)
 --  - Provide multiple lists of keys, one for each screen. This way one could learn to use certain
 --    keys for certain screens. In the case of a two-screen setup, this could also be used to map
 --    hands to screens.
+--  - Combining the above two options should make it possible to, for any given layout and number
+--    of windows, predict the key that will be required to select a given window.
+--  - Allow the user to limit chord length; even if this means that not all windows are given a
+--    chord.
 --  - Delay after selection so the user can see what they've chosen? Min-delay: 0 seconds. If
 --    there's a delay, perhaps keep the other windows covered briefly to naturally draw the user's
 --    attention to the window they've selected? Or briefly highlight the border of the selected
