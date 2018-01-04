@@ -123,7 +123,7 @@ instance Default EasyMotionConfig where
            , emCancelKey   = xK_q
            , emFont        = "xft: Sans-100"
            , emBorderWidth = 1
-           , emMaxChordLen = 1
+           , emMaxChordLen = -1
            }
 
 -- | Display overlay windows and chords for window selection
@@ -172,7 +172,7 @@ appendChords maxLen keys os =
     where
       chords = replicateM chordLen keys
       tempLen = (fi . length $ os) `div` (fi . length $ keys) + 1
-      chordLen = if maxLen == 0 then tempLen else min tempLen maxLen
+      chordLen = if maxLen <= 0 then tempLen else min tempLen maxLen
 
 -- | Get a key event, translate it to an event type and keysym
 event d = allocaXEvent $ \e -> do
