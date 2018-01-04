@@ -111,6 +111,7 @@ data EasyMotionConfig =
          , emCancelKey   :: KeySym   -- ^ Key to use to cancel selection
          , emFont        :: String   -- ^ Font for selection characters (passed to initXMF)
          , emBorderWidth :: Int      -- ^ Width of border in pixels
+         , emMaxChordLen :: Int      -- ^ Maximum chord length. Use 0 for no maximum.
          } deriving (Show)
 
 instance Default EasyMotionConfig where
@@ -122,6 +123,7 @@ instance Default EasyMotionConfig where
            , emCancelKey   = xK_q
            , emFont        = "xft: Sans-100"
            , emBorderWidth = 1
+           , emMaxChordLen = 1
            }
 
 -- | Display overlay windows and chords for window selection
@@ -134,6 +136,7 @@ selectWindow EMConf { emTextColor   = textColor
                     , emCancelKey   = cancelKey
                     , emFont        = font
                     , emBorderWidth = brW
+                    , emMaxChordLen = maxChordLen
                     } = do
   -- make sure the key list doesn't contain: duplicates, 'cancelKey, backspace
   let filterKeys = toList . fromList . L.filter (fmap not (`elem` [cancelKey, xK_BackSpace]))
@@ -149,7 +152,7 @@ selectWindow EMConf { emTextColor   = textColor
           r <- getWindowRect dpy w
           o <- createNewWindow r Nothing "" True
           return Overlay { win=w, rect=r, overlay=o }
-      overlays <- appendChords filteredKeys <$> sequence (fmap buildOverlay (toList wins))
+      overlays <- appendChords maxChordLen filteredKeys <$> sequence (fmap buildOverlay (toList wins))
       status <- io $ grabKeyboard dpy rw True grabModeAsync grabModeAsync currentTime
       when (status == grabSuccess) $ do
           -- handle keyboard input
@@ -163,12 +166,13 @@ selectWindow EMConf { emTextColor   = textColor
           releaseXMF f
 
 -- | Take a list of overlays lacking chords, return a list of overlays with key chords
-appendChords :: [KeySym] -> [Overlay] -> [Overlay]
-appendChords keys os =
+appendChords :: Int -> [KeySym] -> [Overlay] -> [Overlay]
+appendChords maxLen keys os =
   zipWith (\c o -> Overlay { overlay=overlay o, rect=rect o, chord=c, win=win o }) chords os
     where
       chords = replicateM chordLen keys
-      chordLen = (fi . length $ os) `div` (fi . length $ keys) + 1
+      tempLen = (fi . length $ os) `div` (fi . length $ keys) + 1
+      chordLen = if maxLen == 0 then tempLen else min tempLen maxLen
 
 -- | Get a key event, translate it to an event type and keysym
 event d = allocaXEvent $ \e -> do
