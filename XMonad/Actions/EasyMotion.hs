@@ -41,9 +41,13 @@ import qualified Data.List as L (filter, foldl', partition, find)
 --
 -- >    import XMonad.Actions.EasyMotion (selectWindow)
 --
--- Then add a keybinding to the selectWindow action:
+-- Then add a keybinding and an action to the selectWindow function. In this case M-f and focus:
 --
--- >    , ((modm, xK_f), selectWindow def)
+-- >    , ((modm, xK_f), (selectWindow def) >>= (flip whenJust (windows . W.focusWindow)))
+--
+-- Similarly, M-f and kill:
+--
+-- >    , ((modm, xK_f), (selectWindow def) >>= (flip whenJust killWindow))
 --
 -- Default chord keys are s,d,f,j,k,l. To customise these and display options assign
 -- different values to def:
@@ -51,7 +55,7 @@ import qualified Data.List as L (filter, foldl', partition, find)
 -- >    import XMonad.Actions.EasyMotion (selectWindow, EasyMotionConfig(..))
 -- >    , ((modm, xK_f), selectWindow def {emKeys = [xK_f, xK_d], emFont: "xft: Sans-40" })
 --
--- You should supply at least two keys in the emKeys list.
+-- You must supply at least two different keys in the emKeys list.
 --
 -- The font field provided is supplied directly to the initXMF function. The default is
 -- "xft:Sans-100". Some example options:
@@ -61,6 +65,7 @@ import qualified Data.List as L (filter, foldl', partition, find)
 -- >    "xft: Cambria-80"
 
 -- TODO:
+--  - windowbringer example; bring window from other screen to current screen?
 --  - Use stringToKeysym, keysymToKeycode, keycodeToKeysym, keysymToString to take a string from
 --    the user?
 --  - Think a bit more about improving functionality with floating windows.
@@ -127,8 +132,8 @@ instance Default EasyMotionConfig where
            }
 
 -- | Display overlay windows and chords for window selection
-selectWindow :: EasyMotionConfig -> X ()
-selectWindow EMConf { emKeys = [] } = return ()
+selectWindow :: EasyMotionConfig -> X (Maybe Window)
+selectWindow EMConf { emKeys = [] } = return Nothing
 selectWindow EMConf { emTextColor   = textColor
                     , emBgColor     = bgColor
                     , emBorderColor = borderColor
@@ -141,8 +146,8 @@ selectWindow EMConf { emTextColor   = textColor
   -- make sure the key list doesn't contain: duplicates, 'cancelKey, backspace
   let filterKeys = toList . fromList . L.filter (fmap not (`elem` [cancelKey, xK_BackSpace]))
   case filterKeys keys of
-    [] -> return ()
-    [x] -> return ()
+    [] -> return Nothing
+    [x] -> return Nothing
     filteredKeys -> do
       f <- initXMF font
       XConf { theRoot = rw, display = dpy } <- ask
@@ -154,16 +159,18 @@ selectWindow EMConf { emTextColor   = textColor
           return Overlay { win=w, rect=r, overlay=o }
       overlays <- appendChords maxChordLen filteredKeys <$> sequence (fmap buildOverlay (toList wins))
       status <- io $ grabKeyboard dpy rw True grabModeAsync grabModeAsync currentTime
-      when (status == grabSuccess) $ do
+      case status of
+        grabSuccess -> do
           -- handle keyboard input
           resultWin <- handle dpy (displayOverlay f bgColor borderColor textColor brW) cancelKey overlays []
           io $ ungrabKeyboard dpy currentTime
           mapM_ (deleteWindow . overlay) overlays
-          case resultWin of
-            Selected o -> windows . W.focusWindow . win $ o
-            _ -> whenJust currentW (windows . W.focusWindow . W.focus) -- return focus correctly
           io $ sync dpy False
           releaseXMF f
+          case resultWin of
+            Selected o -> return . Just $ win o
+            _ -> whenJust currentW (windows . W.focusWindow . W.focus) >> return Nothing -- return focus correctly
+        _ -> return Nothing
 
 -- | Take a list of overlays lacking chords, return a list of overlays with key chords
 appendChords :: Int -> [KeySym] -> [Overlay] -> [Overlay]
