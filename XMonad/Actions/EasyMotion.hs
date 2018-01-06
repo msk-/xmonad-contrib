@@ -25,7 +25,7 @@ module XMonad.Actions.EasyMotion (
 
 import XMonad
 import XMonad.StackSet as W
-import XMonad.Util.Font (releaseXMF, initXMF, Align(AlignCenter), XMonadFont(..))
+import XMonad.Util.Font (releaseXMF, initXMF, Align(AlignCenter), XMonadFont(..), textExtentsXMF)
 import XMonad.Util.XUtils (fi, createNewWindow, paintAndWrite, deleteWindow, showWindow)
 import Control.Applicative ((<$>))
 import Control.Monad (when, replicateM)
@@ -53,9 +53,9 @@ import qualified Data.List as L (filter, foldl', partition, find)
 -- different values to def:
 --
 -- >    import XMonad.Actions.EasyMotion (selectWindow, EasyMotionConfig(..))
--- >    , ((modm, xK_f), selectWindow def {emKeys = [xK_f, xK_d], emFont: "xft: Sans-40" })
+-- >    , ((modm, xK_f), selectWindow def {sKeys = [xK_f, xK_d], font: "xft: Sans-40" })
 --
--- You must supply at least two different keys in the emKeys list.
+-- You must supply at least two different keys in the sKeys list.
 --
 -- The font field provided is supplied directly to the initXMF function. The default is
 -- "xft:Sans-100". Some example options:
@@ -65,7 +65,8 @@ import qualified Data.List as L (filter, foldl', partition, find)
 -- >    "xft: Cambria-80"
 
 -- TODO:
---  - windowbringer example; bring window from other screen to current screen?
+--  - W.shift example; bring window from other screen to current screen? Only useful if we don't
+--    show chords on current workspace.
 --  - Use stringToKeysym, keysymToKeycode, keycodeToKeysym, keysymToString to take a string from
 --    the user?
 --  - Think a bit more about improving functionality with floating windows.
@@ -75,8 +76,6 @@ import qualified Data.List as L (filter, foldl', partition, find)
 --      that space
 --  - Provide an option to prepend the screen key to the easymotion keys (i.e. w,e,r)?
 --  - overlay alpha
---  - Make a 'bring that window to this workspace' option. i.e. a window bringer and a window goto.
---    How modular is the WindowBringer extension? Can we provide a window-selector function to it?
 --  - Attempt to order windows left-to-right, top-to-bottom, then match select keys with them such
 --    that for keys asdf the left-top-most window has key a, etc.
 --  - Provide multiple lists of keys, one for each screen. This way one could learn to use certain
@@ -90,6 +89,7 @@ import qualified Data.List as L (filter, foldl', partition, find)
 --    there's a delay, perhaps keep the other windows covered briefly to naturally draw the user's
 --    attention to the window they've selected? Or briefly highlight the border of the selected
 --    window?
+--  - Option to cover windows that will not be selected by the current chord, such that 
 --  - Something unpleasant happens when the user provides only two keys (let's say f, d) for
 --    chords. When they have five windows open, the following chords are generated: ddd, ddf, dfd,
 --    dff, fdd. When 'f' is pressed, all chords disappear unexpectedly because we know there are no
@@ -97,6 +97,10 @@ import qualified Data.List as L (filter, foldl', partition, find)
 --    pretty bad for usability, as the user continues firing keys into their
 --    now-unexpectedly-active window. And is of course only one concrete example of a more general
 --    problem.
+--    Short-term solution:
+--      - Keep displaying the chord until the user has fully entered it
+--    Medium-term solution:
+--      - Show the shortest possible chords
 
 -- | Associates a user window, an overlay window created by this module, a rectangle circumscribing
 --   these windows, and the chord that will be used to select them
@@ -109,60 +113,85 @@ data Overlay =
 
 -- | Configuration options for EasyMotion
 data EasyMotionConfig =
-  EMConf { emTextColor   :: String   -- ^ Color of the text displayed
-         , emBgColor     :: String   -- ^ Color of the window overlaid
-         , emBorderColor :: String   -- ^ Color of the overlay window borders
-         , emKeys        :: [KeySym] -- ^ Keys to use for window selection
-         , emCancelKey   :: KeySym   -- ^ Key to use to cancel selection
-         , emFont        :: String   -- ^ Font for selection characters (passed to initXMF)
-         , emBorderWidth :: Int      -- ^ Width of border in pixels
-         , emMaxChordLen :: Int      -- ^ Maximum chord length. Use 0 for no maximum.
-         } deriving (Show)
+  EMConf { txtCol      :: String   -- ^ Color of the text displayed
+         , bgCol       :: String   -- ^ Color of the window overlaid
+         , overlayF    :: (Position -> Rectangle -> X Rectangle)
+         , borderCol   :: String   -- ^ Color of the overlay window borders
+         , sKeys       :: [KeySym] -- ^ Keys to use for window selection
+         , cancelKey   :: KeySym   -- ^ Key to use to cancel selection
+         , font        :: String   -- ^ Font for selection characters (passed to initXMF)
+         , borderPx    :: Int      -- ^ Width of border in pixels
+         , maxChordLen :: Int      -- ^ Maximum chord length. Use 0 for no maximum.
+         }
 
+{- TODO: remove this awkward namespacing; let the user add namespacing on import if they want -}
 instance Default EasyMotionConfig where
   def =
-    EMConf { emTextColor   = "#ffffff"
-           , emBgColor     = "#000000"
-           , emBorderColor = "#ffffff"
-           , emKeys        = [xK_s, xK_d, xK_f, xK_j, xK_k, xK_l]
-           , emCancelKey   = xK_q
-           , emFont        = "xft: Sans-100"
-           , emBorderWidth = 1
-           , emMaxChordLen = -1
+    EMConf { txtCol      = "#ffffff"
+           , bgCol       = "#000000"
+           , overlayF    = proportional 0.3
+           , borderCol   = "#ffffff"
+           , sKeys       = [xK_s, xK_d, xK_f, xK_j, xK_k, xK_l]
+           , cancelKey   = xK_q
+           , font        = "xft: Sans-100"
+           , borderPx    = 1
+           , maxChordLen = 0
            }
+
+-- | Use to create overlay windows the same size as the window they select
+fullSize :: Position -> Rectangle -> X Rectangle
+fullSize th = return
+
+-- | Use to create overlay windows a proportion of the size of the window they select
+proportional :: RealFrac f => f -> Position -> Rectangle -> X Rectangle
+proportional f th r = do
+  let newW = round $ f * fi (rect_width r)
+      newH = round $ f * fi (rect_height r)
+  return Rectangle { rect_width  = newW
+                   , rect_height = newH
+                   , rect_x      = (rect_x r) + fi (rect_width r - newW) `div` 2
+                   , rect_y      = (rect_y r) + fi (rect_height r - newH) `div` 2 }
+
+-- | Use to create overlay windows the minimum size to contain their key chord
+textSize :: Position -> Rectangle -> X Rectangle
+textSize th r = return Rectangle { rect_width  = fi th
+                                 , rect_height = fi th
+                                 , rect_x      = (rect_x r) + ((fi $ rect_width r) - fi th) `div` 2
+                                 , rect_y      = (rect_y r) + ((fi $ rect_height r) - fi th) `div` 2 }
+
+-- | Use to create overlay windows the full width of the window they select, the minimum height to
+--   contain their chord, and a proportion of the distance from the top of the window they select
+bar :: RealFrac f => f -> Position -> Rectangle -> X Rectangle
+bar f th r = return Rectangle { rect_width  = rect_width r
+                              , rect_height = fi th
+                              , rect_x      = rect_x r
+                              , rect_y      = (rect_y r) + round (f * (fi (rect_height r) - fi th)) }
 
 -- | Display overlay windows and chords for window selection
 selectWindow :: EasyMotionConfig -> X (Maybe Window)
-selectWindow EMConf { emKeys = [] } = return Nothing
-selectWindow EMConf { emTextColor   = textColor
-                    , emBgColor     = bgColor
-                    , emBorderColor = borderColor
-                    , emKeys        = keys
-                    , emCancelKey   = cancelKey
-                    , emFont        = font
-                    , emBorderWidth = brW
-                    , emMaxChordLen = maxChordLen
-                    } = do
+selectWindow EMConf { sKeys = [] } = return Nothing
+selectWindow c = do
   -- make sure the key list doesn't contain: duplicates, 'cancelKey, backspace
-  let filterKeys = toList . fromList . L.filter (fmap not (`elem` [cancelKey, xK_BackSpace]))
-  case filterKeys keys of
+  let filterKeys = toList . fromList . L.filter (fmap not (`elem` [(cancelKey c), xK_BackSpace]))
+  case filterKeys (sKeys c) of
     [] -> return Nothing
     [x] -> return Nothing
     filteredKeys -> do
-      f <- initXMF font
+      f <- initXMF $ font c
+      th <- (textExtentsXMF f $ concatMap keysymToString filteredKeys) >>= \(asc, dsc) -> return $ asc + dsc + 2
       XConf { theRoot = rw, display = dpy } <- ask
       XState { mapped = wins, windowset = ws } <- get
       let currentW = W.stack . W.workspace . W.current $ ws
-      let buildOverlay w = do
-          r <- getWindowRect dpy w
-          o <- createNewWindow r Nothing "" True
-          return Overlay { win=w, rect=r, overlay=o }
-      overlays <- appendChords maxChordLen filteredKeys <$> sequence (fmap buildOverlay (toList wins))
+          buildOverlay w = do
+            r <- (getWindowRect dpy w) >>= ((overlayF c) th)
+            o <- createNewWindow r Nothing "" True
+            return Overlay { win=w, rect=r, overlay=o }
+      overlays <- appendChords (maxChordLen c) filteredKeys <$> sequence (fmap buildOverlay (toList wins))
       status <- io $ grabKeyboard dpy rw True grabModeAsync grabModeAsync currentTime
       case status of
         grabSuccess -> do
           -- handle keyboard input
-          resultWin <- handle dpy (displayOverlay f bgColor borderColor textColor brW) cancelKey overlays []
+          resultWin <- handle dpy (displayOverlay f (bgCol c) (borderCol c) (txtCol c) (borderPx c)) (cancelKey c) overlays []
           io $ ungrabKeyboard dpy currentTime
           mapM_ (deleteWindow . overlay) overlays
           io $ sync dpy False
