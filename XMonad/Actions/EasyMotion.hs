@@ -41,11 +41,11 @@ import qualified Data.List as L (filter, foldl', partition, find)
 --
 -- >    import XMonad.Actions.EasyMotion (selectWindow)
 --
--- Then add a keybinding and an action to the selectWindow function. In this case M-f and focus:
+-- Then add a keybinding and an action to the selectWindow function. In this case M-f to focus:
 --
 -- >    , ((modm, xK_f), (selectWindow def) >>= (flip whenJust (windows . W.focusWindow)))
 --
--- Similarly, M-f and kill:
+-- Similarly, to kill a window with M-f:
 --
 -- >    , ((modm, xK_f), (selectWindow def) >>= (flip whenJust killWindow))
 --
@@ -53,7 +53,7 @@ import qualified Data.List as L (filter, foldl', partition, find)
 -- different values to def:
 --
 -- >    import XMonad.Actions.EasyMotion (selectWindow, EasyMotionConfig(..))
--- >    , ((modm, xK_f), selectWindow def {sKeys = [xK_f, xK_d], font: "xft: Sans-40" })
+-- >    , ((modm, xK_f), (selectWindow def {sKeys = [xK_f, xK_d], font: "xft: Sans-40" }) >>= (flip whenJust (windows . W.focusWindow)))
 --
 -- You must supply at least two different keys in the sKeys list.
 --
@@ -63,6 +63,14 @@ import qualified Data.List as L (filter, foldl', partition, find)
 -- >    "xft: Sans-40"
 -- >    "xft: Arial-100"
 -- >    "xft: Cambria-80"
+--
+-- Customise the overlay by supplying a function to do so. The signature is 'Position' ->
+-- 'Rectangle' -> 'X' 'Rectangle'. Some are provided:
+--
+-- >    import XMonad.Actions.EasyMotion (selectWindow, EasyMotionConfig(..), proportional, bar, fullSize)
+-- >    , ((modm, xK_f), (selectWindow def { overlayF = proportional 0.3 }) >>= (flip whenJust (windows . W.focusWindow)))
+-- >    , ((modm, xK_f), (selectWindow def { overlayF = bar 0.5 }) >>= (flip whenJust (windows . W.focusWindow)))
+-- >    , ((modm, xK_f), (selectWindow def { overlayF = fullSize }) >>= (flip whenJust (windows . W.focusWindow)))
 
 -- TODO:
 --  - W.shift example; bring window from other screen to current screen? Only useful if we don't
@@ -83,8 +91,6 @@ import qualified Data.List as L (filter, foldl', partition, find)
 --    hands to screens.
 --  - Combining the above two options should make it possible to, for any given layout and number
 --    of windows, predict the key that will be required to select a given window.
---  - Allow the user to limit chord length; even if this means that not all windows are given a
---    chord.
 --  - Delay after selection so the user can see what they've chosen? Min-delay: 0 seconds. If
 --    there's a delay, perhaps keep the other windows covered briefly to naturally draw the user's
 --    attention to the window they've selected? Or briefly highlight the border of the selected
@@ -159,6 +165,7 @@ textSize th r = return Rectangle { rect_width  = fi th
                                  , rect_x      = (rect_x r) + ((fi $ rect_width r) - fi th) `div` 2
                                  , rect_y      = (rect_y r) + ((fi $ rect_height r) - fi th) `div` 2 }
 
+-- {- TODO: clamp f in [0,1] as other values will appear to lock up xmonad -}
 -- | Use to create overlay windows the full width of the window they select, the minimum height to
 --   contain their chord, and a proportion of the distance from the top of the window they select
 bar :: RealFrac f => f -> Position -> Rectangle -> X Rectangle
