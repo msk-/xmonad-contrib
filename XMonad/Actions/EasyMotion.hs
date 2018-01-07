@@ -29,11 +29,12 @@ import XMonad.Util.Font (releaseXMF, initXMF, Align(AlignCenter), XMonadFont(..)
 import XMonad.Util.XUtils (fi, createNewWindow, paintAndWrite, deleteWindow, showWindow)
 import Control.Applicative ((<$>))
 import Control.Monad (when, replicateM)
+import Control.Arrow ((&&&))
 import Data.Maybe (isJust)
 import Data.Set (fromList, toList)
 import Graphics.X11.Xlib
 import Graphics.X11.Xlib.Extras (getWindowAttributes, getEvent)
-import qualified Data.List as L (filter, foldl', partition, find)
+import qualified Data.List as L (filter, foldl', partition, find, sortOn)
 
 -- $usage
 --
@@ -65,7 +66,8 @@ import qualified Data.List as L (filter, foldl', partition, find)
 -- >    "xft: Cambria-80"
 --
 -- Customise the overlay by supplying a function to do so. The signature is 'Position' ->
--- 'Rectangle' -> 'X' 'Rectangle'. Some are provided:
+-- 'Rectangle' -> 'X' 'Rectangle'. The parameters are the height in pixels of the selection chord
+-- and the rectangle of the window to be overlaid. Some are provided:
 --
 -- >    import XMonad.Actions.EasyMotion (selectWindow, EasyMotionConfig(..), proportional, bar, fullSize)
 -- >    , ((modm, xK_f), (selectWindow def { overlayF = proportional 0.3 }) >>= (flip whenJust (windows . W.focusWindow)))
@@ -73,6 +75,7 @@ import qualified Data.List as L (filter, foldl', partition, find)
 -- >    , ((modm, xK_f), (selectWindow def { overlayF = fullSize }) >>= (flip whenJust (windows . W.focusWindow)))
 
 -- TODO:
+--  - Parametrise chord generation?
 --  - W.shift example; bring window from other screen to current screen? Only useful if we don't
 --    show chords on current workspace.
 --  - Use stringToKeysym, keysymToKeycode, keycodeToKeysym, keysymToString to take a string from
@@ -111,23 +114,24 @@ import qualified Data.List as L (filter, foldl', partition, find)
 -- | Associates a user window, an overlay window created by this module, a rectangle circumscribing
 --   these windows, and the chord that will be used to select them
 data Overlay = 
-  Overlay { win     :: Window      -- The window managed by xmonad
-          , overlay :: Window      -- Our window used to display the overlay
-          , rect    :: Rectangle   -- The rectangle of 'win (and 'overlay)
-          , chord   :: [KeySym]    -- The chord we'll display in the overlay
-          } deriving (Show, Eq)
+  Overlay { win     :: Window           -- The window managed by xmonad
+          , attrs   :: WindowAttributes -- X11 window attributes for 'win
+          , overlay :: Window           -- Our window used to display the overlay
+          , rect    :: Rectangle        -- The rectangle of 'overlay
+          , chord   :: [KeySym]         -- The chord we'll display in the overlay
+          }
 
 -- | Configuration options for EasyMotion
 data EasyMotionConfig =
-  EMConf { txtCol      :: String   -- ^ Color of the text displayed
-         , bgCol       :: String   -- ^ Color of the window overlaid
-         , overlayF    :: (Position -> Rectangle -> X Rectangle)
-         , borderCol   :: String   -- ^ Color of the overlay window borders
-         , sKeys       :: [KeySym] -- ^ Keys to use for window selection
-         , cancelKey   :: KeySym   -- ^ Key to use to cancel selection
-         , font        :: String   -- ^ Font for selection characters (passed to initXMF)
-         , borderPx    :: Int      -- ^ Width of border in pixels
-         , maxChordLen :: Int      -- ^ Maximum chord length. Use 0 for no maximum.
+  EMConf { txtCol      :: String                               -- ^ Color of the text displayed
+         , bgCol       :: String                               -- ^ Color of the window overlaid
+         , overlayF    :: (Position -> Rectangle -> Rectangle) -- ^ Function to generate overlay rectangle
+         , borderCol   :: String                               -- ^ Color of the overlay window borders
+         , sKeys       :: [[KeySym]]                           -- ^ Keys to use for window selection
+         , cancelKey   :: KeySym                               -- ^ Key to use to cancel selection
+         , font        :: String                               -- ^ Font for selection characters (passed to initXMF)
+         , borderPx    :: Int                                  -- ^ Width of border in pixels
+         , maxChordLen :: Int                                  -- ^ Maximum chord length. Use 0 for no maximum.
          }
 
 {- TODO: remove this awkward namespacing; let the user add namespacing on import if they want -}
@@ -137,7 +141,7 @@ instance Default EasyMotionConfig where
            , bgCol       = "#000000"
            , overlayF    = proportional 0.3
            , borderCol   = "#ffffff"
-           , sKeys       = [xK_s, xK_d, xK_f, xK_j, xK_k, xK_l]
+           , sKeys       = [[xK_s, xK_d, xK_f, xK_j, xK_k, xK_l]]
            , cancelKey   = xK_q
            , font        = "xft: Sans-100"
            , borderPx    = 1
@@ -145,68 +149,85 @@ instance Default EasyMotionConfig where
            }
 
 -- | Use to create overlay windows the same size as the window they select
-fullSize :: Position -> Rectangle -> X Rectangle
-fullSize th = return
+fullSize :: Position -> Rectangle -> Rectangle
+fullSize th = id
 
 -- | Use to create overlay windows a proportion of the size of the window they select
-proportional :: RealFrac f => f -> Position -> Rectangle -> X Rectangle
+proportional :: RealFrac f => f -> Position -> Rectangle -> Rectangle
 proportional f th r = do
   let newW = round $ f * fi (rect_width r)
       newH = round $ f * fi (rect_height r)
-  return Rectangle { rect_width  = newW
-                   , rect_height = newH
-                   , rect_x      = (rect_x r) + fi (rect_width r - newW) `div` 2
-                   , rect_y      = (rect_y r) + fi (rect_height r - newH) `div` 2 }
+  Rectangle { rect_width  = newW
+            , rect_height = newH
+            , rect_x      = (rect_x r) + fi (rect_width r - newW) `div` 2
+            , rect_y      = (rect_y r) + fi (rect_height r - newH) `div` 2 }
 
 -- | Use to create overlay windows the minimum size to contain their key chord
-textSize :: Position -> Rectangle -> X Rectangle
-textSize th r = return Rectangle { rect_width  = fi th
-                                 , rect_height = fi th
-                                 , rect_x      = (rect_x r) + ((fi $ rect_width r) - fi th) `div` 2
-                                 , rect_y      = (rect_y r) + ((fi $ rect_height r) - fi th) `div` 2 }
+textSize :: Position -> Rectangle -> Rectangle
+textSize th r = Rectangle { rect_width  = fi th
+                          , rect_height = fi th
+                          , rect_x      = (rect_x r) + ((fi $ rect_width r) - fi th) `div` 2
+                          , rect_y      = (rect_y r) + ((fi $ rect_height r) - fi th) `div` 2 }
 
--- {- TODO: clamp f in [0,1] as other values will appear to lock up xmonad -}
 -- | Use to create overlay windows the full width of the window they select, the minimum height to
 --   contain their chord, and a proportion of the distance from the top of the window they select
-bar :: RealFrac f => f -> Position -> Rectangle -> X Rectangle
-bar f th r = return Rectangle { rect_width  = rect_width r
-                              , rect_height = fi th
-                              , rect_x      = rect_x r
-                              , rect_y      = (rect_y r) + round (f * (fi (rect_height r) - fi th)) }
+bar :: RealFrac f => f -> Position -> Rectangle -> Rectangle
+bar f th r = Rectangle { rect_width  = rect_width r
+                       , rect_height = fi th
+                       , rect_x      = rect_x r
+                       , rect_y      = (rect_y r) + round (f' * (fi (rect_height r) - fi th)) }
+                         -- clamp f in [0,1] as other values will appear to lock up xmonad
+                         -- as the overlay will be displayed off-screen
+                         where f' = min 0.0 $ max f 1.0
 
 -- | Display overlay windows and chords for window selection
 selectWindow :: EasyMotionConfig -> X (Maybe Window)
 selectWindow EMConf { sKeys = [] } = return Nothing
 selectWindow c = do
-  -- make sure the key list doesn't contain: duplicates, 'cancelKey, backspace
-  let filterKeys = toList . fromList . L.filter (fmap not (`elem` [(cancelKey c), xK_BackSpace]))
-  case filterKeys (sKeys c) of
-    [] -> return Nothing
-    [x] -> return Nothing
-    filteredKeys -> do
-      f <- initXMF $ font c
-      th <- (textExtentsXMF f $ concatMap keysymToString filteredKeys) >>= \(asc, dsc) -> return $ asc + dsc + 2
-      XConf { theRoot = rw, display = dpy } <- ask
-      XState { mapped = wins, windowset = ws } <- get
-      let currentW = W.stack . W.workspace . W.current $ ws
-          buildOverlay w = do
-            r <- (getWindowRect dpy w) >>= ((overlayF c) th)
-            o <- createNewWindow r Nothing "" True
-            return Overlay { win=w, rect=r, overlay=o }
-      overlays <- appendChords (maxChordLen c) filteredKeys <$> sequence (fmap buildOverlay (toList wins))
-      status <- io $ grabKeyboard dpy rw True grabModeAsync grabModeAsync currentTime
-      case status of
-        grabSuccess -> do
-          -- handle keyboard input
-          resultWin <- handle dpy (displayOverlay f (bgCol c) (borderCol c) (txtCol c) (borderPx c)) (cancelKey c) overlays []
-          io $ ungrabKeyboard dpy currentTime
-          mapM_ (deleteWindow . overlay) overlays
-          io $ sync dpy False
-          releaseXMF f
-          case resultWin of
-            Selected o -> return . Just $ win o
-            _ -> whenJust currentW (windows . W.focusWindow . W.focus) >> return Nothing -- return focus correctly
-        _ -> return Nothing
+  -- make sure the key lists don't contain: duplicates, 'cancelKey, backspace
+  let filterKeys = toList . fromList . L.filter (not . (flip elem) [(cancelKey c), xK_BackSpace])
+  -- case sKeys of
+  --   [x] -> ()
+  --   _   -> 
+  -- case concatMap filterKeys (sKeys c) of
+  --   [] -> return Nothing
+  --   [x] -> return Nothing
+  --   filteredKeys -> do
+  f <- initXMF $ font c
+  th <- (textExtentsXMF f $ concatMap keysymToString (concat $ sKeys c)) >>= \(asc, dsc) -> return $ asc + dsc + 2
+  XConf { theRoot = rw, display = dpy } <- ask
+  XState { mapped = mappedWins, windowset = ws } <- get
+  -- get the list of windows bucketed by screen; and in x, then y position order
+  let currentW = W.stack . W.workspace . W.current $ ws
+      -- TODO: sort wins
+      wins = case (sKeys c) of
+               {-  TODO: switch these! -}
+               [x] -> map (L.filter (`elem` mappedWins) . W.integrate' . W.stack . W.workspace) sortedScreens
+                 where
+                   sortedScreens = (L.sortOn ((rect_x &&& rect_y) . screenRect . W.screenDetail)) (W.current ws : W.visible ws)
+               _ -> [toList mappedWins]
+      -- pairs = concatMap (\(ks, ws) -> zip ks ws) $ zip (sKeys c) wins
+      {-  TODO: rename -}
+      pairs = zip (sKeys c) wins
+      buildOverlay w = do
+        wAttrs <- io $ getWindowAttributes dpy w
+        let r = (overlayF c) th $ makeRect wAttrs
+        o <- createNewWindow r Nothing "" True
+        return Overlay { win=w, rect=r, overlay=o, attrs=wAttrs }
+  overlays <- fmap (\(ks, ws) -> appendChords (maxChordLen c) ks <$> sequence (fmap buildOverlay ws)) pairs
+  status <- io $ grabKeyboard dpy rw True grabModeAsync grabModeAsync currentTime
+  case status of
+    grabSuccess -> do
+      -- handle keyboard input
+      resultWin <- handle dpy (displayOverlay f (bgCol c) (borderCol c) (txtCol c) (borderPx c)) (cancelKey c) overlays []
+      io $ ungrabKeyboard dpy currentTime
+      mapM_ (deleteWindow . overlay) overlays
+      io $ sync dpy False
+      releaseXMF f
+      case resultWin of
+        Selected o -> return . Just $ win o
+        _ -> whenJust currentW (windows . W.focusWindow . W.focus) >> return Nothing -- return focus correctly
+    _ -> return Nothing
 
 -- | Take a list of overlays lacking chords, return a list of overlays with key chords
 appendChords :: Int -> [KeySym] -> [Overlay] -> [Overlay]
@@ -258,8 +279,12 @@ getWindowRect dpy w = io $ fmap makeRect (getWindowAttributes dpy w)
     makeRect :: WindowAttributes -> Rectangle
     makeRect wa = Rectangle (fi (wa_x wa)) (fi (wa_y wa)) (fi (wa_width wa)) (fi (wa_height wa))
 
+makeRect :: WindowAttributes -> Rectangle
+makeRect wa = Rectangle (fi (wa_x wa)) (fi (wa_y wa)) (fi (wa_width wa)) (fi (wa_height wa))
+
 -- | Display an overlay with the provided formatting
 displayOverlay :: XMonadFont -> String -> String -> String -> Int -> Overlay -> X ()
 displayOverlay f bgC brC textC brW Overlay { overlay = w, rect = r, chord = c } = do
   showWindow w
   paintAndWrite w f (fi (rect_width r)) (fi (rect_height r)) (fi brW) bgC brC textC bgC [AlignCenter] [L.foldl' (++) "" $ map keysymToString c]
+
