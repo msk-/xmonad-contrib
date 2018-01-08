@@ -75,7 +75,10 @@ import qualified Data.List as L (filter, foldl', partition, find, sortOn)
 -- >    , ((modm, xK_f), (selectWindow def { overlayF = fullSize }) >>= (flip whenJust (windows . W.focusWindow)))
 
 -- TODO:
---  - An overlay function that creates a window of a fixed w,h, aligned mid,mid, or parametrised
+--  - An overlay function that creates an overlay a proportion of the width XOR height of the
+--    window it's over, and with a fixed w/h proportion? E.g. overlay-height = 0.3 *
+--    target-window-height; overlay-width = 0.5 * overlay-height.
+--  - An overlay function that creates an overlay of a fixed w,h, aligned mid,mid, or parametrised
 --    alignment?
 --  - Parametrise chord generation?
 --  - W.shift example; bring window from other screen to current screen? Only useful if we don't
