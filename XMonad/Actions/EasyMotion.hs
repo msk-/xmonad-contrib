@@ -212,6 +212,7 @@ selectWindow c = do
                    sortedScreens = L.sortOn ((rect_x &&& rect_y) . screenRect . W.screenDetail) (W.current ws : W.visible ws)
       {-  TODO: rename pairs -}
       -- pairs = zip (sKeys c) wins
+      displayF = displayOverlay f (bgCol c) (borderCol c) (txtCol c) (borderPx c)
       buildOverlay w = do
         wAttrs <- io $ getWindowAttributes dpy w
         let r = overlayF c th $ makeRect wAttrs
@@ -222,7 +223,7 @@ selectWindow c = do
   case status of
     grabSuccess -> do
       -- handle keyboard input
-      resultWin <- handle dpy (displayOverlay f (bgCol c) (borderCol c) (txtCol c) (borderPx c)) (cancelKey c) overlays []
+      resultWin <- handle dpy displayF (cancelKey c) overlays []
       io $ ungrabKeyboard dpy currentTime
       mapM_ (deleteWindow . overlay) overlays
       io $ sync dpy False
@@ -238,7 +239,7 @@ appendChords maxLen keys os =
   zipWith (\c o -> Overlay { overlay=overlay o, rect=rect o, chord=c, win=win o }) chords os
     where
       chords = replicateM chordLen keys
-      tempLen = (fi . length $ os) `div` (fi . length $ keys) + 1
+      tempLen = -((-(length os)) `div` (length keys))
       chordLen = if maxLen <= 0 then tempLen else min tempLen maxLen
 
 -- | Get a key event, translate it to an event type and keysym
