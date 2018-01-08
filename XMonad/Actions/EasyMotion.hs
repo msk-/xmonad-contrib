@@ -120,11 +120,11 @@ import qualified Data.List as L (filter, foldl', partition, find, sortOn)
 --   these windows, and the chord that will be used to select them
 data Overlay = 
   Overlay { win     :: Window           -- The window managed by xmonad
-          , attrs   :: WindowAttributes -- X11 window attributes for 'win
+          -- , attrs   :: WindowAttributes -- TODO: needed? X11 window attributes for 'win
           , overlay :: Window           -- Our window used to display the overlay
           , rect    :: Rectangle        -- The rectangle of 'overlay
           , chord   :: [KeySym]         -- The chord we'll display in the overlay
-          }
+          } deriving (Show)
 
 -- | Configuration options for EasyMotion
 data EasyMotionConfig =
@@ -185,6 +185,16 @@ bar f th r = Rectangle { rect_width  = rect_width r
                          -- as the overlay will be displayed off-screen
                          where f' = min 0.0 $ max f 1.0
 
+showDummy dpy y s = do
+  let r = Rectangle{ rect_width=1920, rect_height=50, rect_x=0, rect_y=y }
+      bgC = "#000000"
+      textC = "#ffffff"
+      brW = 1
+  w <- createNewWindow r Nothing "" True
+  f <- initXMF $ "xft: Sans-10"
+  showWindow w
+  paintAndWrite w f (fi (rect_width r)) (fi (rect_height r)) (fi brW) bgC bgC textC bgC [AlignCenter] [s]
+
 -- | Display overlay windows and chords for window selection
 selectWindow :: EasyMotionConfig -> X (Maybe Window)
 selectWindow EMConf { sKeys = [] } = return Nothing
@@ -208,20 +218,19 @@ selectWindow c = do
   XState { mapped = mappedWins, windowset = ws } <- get
   let currentW = W.stack . W.workspace . W.current $ ws
       -- TODO: sort wins
-      pairs = zip (sKeys c) $ case sKeys c of
+      keyWinPairs = L.filter (\(ks, ws) -> ws /= []) $ zip (sKeys c) $ case sKeys c of
                [x] -> [toList mappedWins]
                _ -> map (L.filter (`elem` mappedWins) . W.integrate' . W.stack . W.workspace) sortedScreens
                  where
                    sortedScreens = L.sortOn ((rect_x &&& rect_y) . screenRect . W.screenDetail) (W.current ws : W.visible ws)
-      {-  TODO: rename pairs -}
-      -- pairs = zip (sKeys c) wins
       displayF = displayOverlay f (bgCol c) (borderCol c) (txtCol c) (borderPx c)
-      buildOverlay w = do
+      chordWins = concatMap (\(ks, ws) -> appendChords (maxChordLen c) ks ws) keyWinPairs
+      appendOverlay (w, chord) = do
         wAttrs <- io $ getWindowAttributes dpy w
         let r = overlayF c th $ makeRect wAttrs
         o <- createNewWindow r Nothing "" True
-        return Overlay { win=w, rect=r, overlay=o, attrs=wAttrs }
-  overlays <- fmap concat $ sequence $ fmap (\(ks, ws) -> appendChords (maxChordLen c) ks <$> sequence (fmap buildOverlay ws)) pairs
+        return Overlay { rect=r, overlay=o, chord=chord, win=w } --, attrs=wAttrs }
+  overlays <- sequence $ fmap appendOverlay $ chordWins
   status <- io $ grabKeyboard dpy rw True grabModeAsync grabModeAsync currentTime
   case status of
     grabSuccess -> do
@@ -237,12 +246,13 @@ selectWindow c = do
     _ -> return Nothing
 
 -- | Take a list of overlays lacking chords, return a list of overlays with key chords
-appendChords :: Int -> [KeySym] -> [Overlay] -> [Overlay]
-appendChords maxLen keys os =
-  zipWith (\c o -> Overlay { overlay=overlay o, rect=rect o, chord=c, win=win o }) chords os
+appendChords :: Int -> [KeySym] -> [Window] -> [(Window, [KeySym])]
+appendChords _ [] _ = []
+appendChords maxLen keys wins =
+  zip wins chords
     where
       chords = replicateM chordLen keys
-      tempLen = -((-(length os)) `div` (length keys))
+      tempLen = -((-(length wins)) `div` (length keys))
       chordLen = if maxLen <= 0 then tempLen else min tempLen maxLen
 
 -- | Get a key event, translate it to an event type and keysym
