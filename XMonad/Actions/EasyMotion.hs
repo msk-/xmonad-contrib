@@ -195,14 +195,17 @@ selectWindow c = do
   --   [x] -> ()
   --   _   -> 
   -- case concatMap filterKeys (sKeys c) of
+  --   -- TODO: check there're at least two keys in every list
   --   [] -> return Nothing
   --   [x] -> return Nothing
   --   filteredKeys -> do
+  -- TODO: going to need to filter every key for existence in any other key list, I think. Could
+  -- just concat all keys then fail on any detection of any duplicates whatsoever.
+  -- guard ((length $ filterKeys $ concat (sKeys c)) == (length $ concat (sKeys c)))
   f <- initXMF $ font c
   th <- textExtentsXMF f (concatMap keysymToString (concat $ sKeys c)) >>= \(asc, dsc) -> return $ asc + dsc + 2
   XConf { theRoot = rw, display = dpy } <- ask
   XState { mapped = mappedWins, windowset = ws } <- get
-  -- get the list of windows bucketed by screen; and in x, then y position order
   let currentW = W.stack . W.workspace . W.current $ ws
       -- TODO: sort wins
       pairs = zip (sKeys c) $ case sKeys c of
