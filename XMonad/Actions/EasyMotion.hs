@@ -120,7 +120,6 @@ import qualified Data.List as L (filter, foldl', partition, find, sortOn)
 --   these windows, and the chord that will be used to select them
 data Overlay = 
   Overlay { win     :: Window           -- The window managed by xmonad
-          -- , attrs   :: WindowAttributes -- TODO: needed? X11 window attributes for 'win
           , overlay :: Window           -- Our window used to display the overlay
           , rect    :: Rectangle        -- The rectangle of 'overlay
           , chord   :: [KeySym]         -- The chord we'll display in the overlay
@@ -218,18 +217,18 @@ selectWindow c = do
   XState { mapped = mappedWins, windowset = ws } <- get
   let currentW = W.stack . W.workspace . W.current $ ws
       -- TODO: sort wins
-      keyWinPairs = L.filter (\(ks, ws) -> ws /= []) $ zip (sKeys c) $ case sKeys c of
+      keyWinPairs = zip (sKeys c) $ case sKeys c of
                [x] -> [toList mappedWins]
                _ -> map (L.filter (`elem` mappedWins) . W.integrate' . W.stack . W.workspace) sortedScreens
                  where
                    sortedScreens = L.sortOn ((rect_x &&& rect_y) . screenRect . W.screenDetail) (W.current ws : W.visible ws)
-      displayF = displayOverlay f (bgCol c) (borderCol c) (txtCol c) (borderPx c)
       chordWins = concatMap (\(ks, ws) -> appendChords (maxChordLen c) ks ws) keyWinPairs
+      displayF = displayOverlay f (bgCol c) (borderCol c) (txtCol c) (borderPx c)
       appendOverlay (w, chord) = do
         wAttrs <- io $ getWindowAttributes dpy w
         let r = overlayF c th $ makeRect wAttrs
         o <- createNewWindow r Nothing "" True
-        return Overlay { rect=r, overlay=o, chord=chord, win=w } --, attrs=wAttrs }
+        return Overlay { rect=r, overlay=o, chord=chord, win=w }
   overlays <- sequence $ fmap appendOverlay $ chordWins
   status <- io $ grabKeyboard dpy rw True grabModeAsync grabModeAsync currentTime
   case status of
