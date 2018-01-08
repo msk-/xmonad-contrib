@@ -75,6 +75,8 @@ import qualified Data.List as L (filter, foldl', partition, find, sortOn)
 -- >    , ((modm, xK_f), (selectWindow def { overlayF = fullSize }) >>= (flip whenJust (windows . W.focusWindow)))
 
 -- TODO:
+--  - An overlay function that creates a window of a fixed w,h, aligned mid,mid, or parametrised
+--    alignment?
 --  - Parametrise chord generation?
 --  - W.shift example; bring window from other screen to current screen? Only useful if we don't
 --    show chords on current workspace.
@@ -207,7 +209,7 @@ selectWindow c = do
                    sortedScreens = (L.sortOn ((rect_x &&& rect_y) . screenRect . W.screenDetail)) (W.current ws : W.visible ws)
                _ -> [toList mappedWins]
       -- pairs = concatMap (\(ks, ws) -> zip ks ws) $ zip (sKeys c) wins
-      {-  TODO: rename -}
+      {-  TODO: rename pairs -}
       pairs = zip (sKeys c) wins
       buildOverlay w = do
         wAttrs <- io $ getWindowAttributes dpy w
