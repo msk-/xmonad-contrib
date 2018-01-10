@@ -294,13 +294,6 @@ handle dpy drawFn cancelKey fgOverlays bgOverlays = do
         clear = map (\o -> o { chord = [] })
     () -> handle dpy drawFn cancelKey fgOverlays bgOverlays
 
--- | Get the circumscribing rectangle of the given X window
-getWindowRect :: Display -> Window -> X Rectangle
-getWindowRect dpy w = io $ fmap makeRect (getWindowAttributes dpy w)
-  where
-    makeRect :: WindowAttributes -> Rectangle
-    makeRect wa = Rectangle (fi (wa_x wa)) (fi (wa_y wa)) (fi (wa_width wa)) (fi (wa_height wa))
-
 makeRect :: WindowAttributes -> Rectangle
 makeRect wa = Rectangle (fi (wa_x wa)) (fi (wa_y wa)) (fi (wa_width wa)) (fi (wa_height wa))
 
