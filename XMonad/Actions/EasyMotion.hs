@@ -139,7 +139,6 @@ data EasyMotionConfig =
          , maxChordLen :: Int                                -- ^ Maximum chord length. Use 0 for no maximum.
          }
 
-{- TODO: remove this awkward namespacing; let the user add namespacing on import if they want -}
 instance Default EasyMotionConfig where
   def =
     EMConf { txtCol      = "#ffffff"
@@ -195,27 +194,14 @@ showDummy dpy y s = do
   showWindow w
   paintAndWrite w f (fi (rect_width r)) (fi (rect_height r)) (fi brW) bgC bgC textC bgC [AlignCenter] [s]
 
--- | Display overlay windows and chords for window selection
-selectWindow :: EasyMotionConfig -> X (Maybe Window)
-selectWindow EMConf { sKeys = [] } = return Nothing
-selectWindow c = do
-  -- make sure the key lists don't contain: duplicates, 'cancelKey, backspace
-  let filterKeys = toList . fromList . L.filter (not . flip elem [cancelKey c, xK_BackSpace])
-  -- case sKeys of
-  --   [x] -> ()
-  --   _   -> 
-  -- case concatMap filterKeys (sKeys c) of
-  --   -- TODO: check there're at least two keys in every list
-  --   [] -> return Nothing
-  --   [x] -> return Nothing
-  --   filteredKeys -> do
-  -- TODO: going to need to filter every key for existence in any other key list, I think. Could
-  -- just concat all keys then fail on any detection of any duplicates whatsoever.
-  -- guard ((length $ filterKeys $ concat (sKeys c)) == (length $ concat (sKeys c)))
+-- | Handles overlay display and window selection. Called after config has been sanitised.
+handleSelectWindow :: EasyMotionConfig -> X (Maybe Window)
+handleSelectWindow c = do
   f <- initXMF $ font c
   th <- textExtentsXMF f (concatMap keysymToString (concat $ sKeys c)) >>= \(asc, dsc) -> return $ asc + dsc + 2
   XConf { theRoot = rw, display = dpy } <- ask
   XState { mapped = mappedWins, windowset = ws } <- get
+
   let currentW = W.stack . W.workspace . W.current $ ws
       -- TODO: instead of filtering on `elem` mappedWins, it would be quicker to filter on the
       -- mapped property of the window; we should do that
@@ -226,8 +212,8 @@ selectWindow c = do
           _ -> map (L.filter (`elem` mappedWins) . W.integrate' . W.stack . W.workspace) sortedScreens
             where
               sortedScreens = L.sortOn ((rect_x &&& rect_y) . screenRect . W.screenDetail) (W.current ws : W.visible ws)
-      sortedOverlays :: X [Overlay]
-      sortedOverlays = fmap (concat . zipWith (appendChords (maxChordLen c)) (sKeys c) . fmap (L.sortOn ((wa_x &&& wa_y) . attrs))) winBuckets
+      sortedOverlays :: X [[Overlay]]
+      sortedOverlays = fmap (zipWith (appendChords (maxChordLen c)) (sKeys c) . fmap (L.sortOn ((wa_x &&& wa_y) . attrs))) winBuckets
       displayF = displayOverlay f (bgCol c) (borderCol c) (txtCol c) (borderPx c)
       buildOverlay :: Window -> X Overlay
       buildOverlay w = do
@@ -235,20 +221,37 @@ selectWindow c = do
         let r = overlayF c th $ makeRect wAttrs
         o <- createNewWindow r Nothing "" True
         return Overlay { rect=r, overlay=o, win=w, attrs=wAttrs }
-  overlays <- sortedOverlays
+
+  overlays <- fmap concat sortedOverlays
   status <- io $ grabKeyboard dpy rw True grabModeAsync grabModeAsync currentTime
   case status of
     grabSuccess -> do
       -- handle keyboard input
-      resultWin <- handle dpy displayF (cancelKey c) overlays []
+      resultWin <- handleKeyboard dpy displayF (cancelKey c) overlays []
       io $ ungrabKeyboard dpy currentTime
       mapM_ (deleteWindow . overlay) overlays
       io $ sync dpy False
-      releaseXMF f
+      releaseXMF f -- TODO: do we need to do this when grabSuccess fails?
       case resultWin of
         Selected o -> return . Just $ win o
         _ -> whenJust currentW (windows . W.focusWindow . W.focus) >> return Nothing -- return focus correctly
+    _  -> return Nothing
+
+-- | Display overlay windows and chords for window selection
+selectWindow :: EasyMotionConfig -> X (Maybe Window)
+selectWindow EMConf { sKeys = [] } = return Nothing
+selectWindow conf =
+  -- Make sure there are no duplicates in our key lists
+  case duplicatedKeys of
+    0 -> handleSelectWindow conf { sKeys = map sanitiseKeys (sKeys conf) }
     _ -> return Nothing
+    where
+      keyList = concat (sKeys conf)
+      keyListLen = length keyList
+      uniqueKeyCount = length . toList . fromList $ keyList
+      duplicatedKeys = uniqueKeyCount - keyListLen
+      -- make sure the key lists don't contain: 'cancelKey, backspace
+      sanitiseKeys = toList . fromList . L.filter (not . flip elem [cancelKey conf, xK_BackSpace])
 
 -- | Take a list of overlays lacking chords, return a list of overlays with key chords
 appendChords :: Int -> [KeySym] -> [Overlay] -> [Overlay]
@@ -271,13 +274,13 @@ event d = allocaXEvent $ \e -> do
 --   or backspace.
 data HandleResult a = Exit | Selected a | Backspace
 -- | Handle key press events for window selection.
-handle :: Display -> (Overlay -> X()) -> KeySym -> [Overlay] -> [Overlay] -> X (HandleResult Overlay)
-handle dpy drawFn cancelKey fgOverlays bgOverlays = do
+handleKeyboard :: Display -> (Overlay -> X()) -> KeySym -> [Overlay] -> [Overlay] -> X (HandleResult Overlay)
+handleKeyboard _ _ _ [] _ = return Exit
+handleKeyboard dpy drawFn cancelKey fgOverlays bgOverlays = do
   let redraw = mapM (mapM_ drawFn) [fgOverlays, bgOverlays]
   let retryBackspace x =
         case x of
-          Backspace -> do redraw
-                          handle dpy drawFn cancelKey fgOverlays bgOverlays
+          Backspace -> redraw >> handleKeyboard dpy drawFn cancelKey fgOverlays bgOverlays
           _ -> return x
   redraw
   (t, s) <- io $ event dpy
@@ -287,13 +290,14 @@ handle dpy drawFn cancelKey fgOverlays bgOverlays = do
     () | t == keyPress && isJust (L.find ((== s) . head .chord) fgOverlays) ->
       case fg of
         [x] -> return $ Selected x
-        _   -> handle dpy drawFn cancelKey (trim fg) (clear bg) >>= retryBackspace
+        _   -> handleKeyboard dpy drawFn cancelKey (trim fg) (clear bg) >>= retryBackspace
       where
         (fg, bg) = L.partition ((== s) . head . chord) fgOverlays
         trim = map (\o -> o { chord = tail $ chord o })
         clear = map (\o -> o { chord = [] })
-    () -> handle dpy drawFn cancelKey fgOverlays bgOverlays
+    () -> handleKeyboard dpy drawFn cancelKey fgOverlays bgOverlays
 
+-- | Create a rectangle from window attributes
 makeRect :: WindowAttributes -> Rectangle
 makeRect wa = Rectangle (fi (wa_x wa)) (fi (wa_y wa)) (fi (wa_width wa)) (fi (wa_height wa))
 
