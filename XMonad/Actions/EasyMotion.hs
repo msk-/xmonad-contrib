@@ -54,9 +54,19 @@ import qualified Data.List as L (filter, foldl', partition, find, sortOn)
 -- different values to def:
 --
 -- >    import XMonad.Actions.EasyMotion (selectWindow, EasyMotionConfig(..))
--- >    , ((modm, xK_f), (selectWindow def {sKeys = [xK_f, xK_d], font: "xft: Sans-40" }) >>= (flip whenJust (windows . W.focusWindow)))
+-- >    , ((modm, xK_f), (selectWindow def {sKeys = [[xK_f, xK_d]]}) >>= (flip whenJust (windows . W.focusWindow)))
 --
 -- You must supply at least two different keys in the sKeys list.
+--
+-- To map different sets of keys to different screens:
+--
+-- >    import XMonad.Actions.EasyMotion (selectWindow, EasyMotionConfig(..))
+-- >    , ((modm, xK_f), (selectWindow def {sKeys = [[xK_f, xK_d], [xK_j, xK_k]}) >>= (flip whenJust (windows . W.focusWindow)))
+--
+-- To customise font:
+--
+-- >    import XMonad.Actions.EasyMotion (selectWindow, EasyMotionConfig(..))
+-- >    , ((modm, xK_f), (selectWindow def {font = "xft: Sans-40"}) >>= (flip whenJust (windows . W.focusWindow)))
 --
 -- The font field provided is supplied directly to the initXMF function. The default is
 -- "xft:Sans-100". Some example options:
@@ -73,6 +83,7 @@ import qualified Data.List as L (filter, foldl', partition, find, sortOn)
 -- >    , ((modm, xK_f), (selectWindow def { overlayF = proportional 0.3 }) >>= (flip whenJust (windows . W.focusWindow)))
 -- >    , ((modm, xK_f), (selectWindow def { overlayF = bar 0.5 }) >>= (flip whenJust (windows . W.focusWindow)))
 -- >    , ((modm, xK_f), (selectWindow def { overlayF = fullSize }) >>= (flip whenJust (windows . W.focusWindow)))
+-- >    , ((modm, xK_f), (selectWindow def { overlayF = fixedSize 300 350 }) >>= (flip whenJust (windows . W.focusWindow)))
 
 -- TODO:
 --  - An overlay function that creates an overlay a proportion of the width XOR height of the
@@ -92,18 +103,12 @@ import qualified Data.List as L (filter, foldl', partition, find, sortOn)
 --      that space
 --  - Provide an option to prepend the screen key to the easymotion keys (i.e. w,e,r)?
 --  - overlay alpha
---  - Attempt to order windows left-to-right, top-to-bottom, then match select keys with them such
---    that for keys asdf the left-top-most window has key a, etc.
---  - Provide multiple lists of keys, one for each screen. This way one could learn to use certain
---    keys for certain screens. In the case of a two-screen setup, this could also be used to map
---    hands to screens.
---  - Combining the above two options should make it possible to, for any given layout and number
---    of windows, predict the key that will be required to select a given window.
 --  - Delay after selection so the user can see what they've chosen? Min-delay: 0 seconds. If
 --    there's a delay, perhaps keep the other windows covered briefly to naturally draw the user's
 --    attention to the window they've selected? Or briefly highlight the border of the selected
 --    window?
---  - Option to cover windows that will not be selected by the current chord, such that 
+--  - Option to cover windows that will not be selected by the current chord, such that it's
+--    slightly more obvious where to maintain focus.
 --  - Something unpleasant happens when the user provides only two keys (let's say f, d) for
 --    chords. When they have five windows open, the following chords are generated: ddd, ddf, dfd,
 --    dff, fdd. When 'f' is pressed, all chords disappear unexpectedly because we know there are no
@@ -113,7 +118,7 @@ import qualified Data.List as L (filter, foldl', partition, find, sortOn)
 --    problem.
 --    Short-term solution:
 --      - Keep displaying the chord until the user has fully entered it
---    Medium-term solution:
+--    Fix:
 --      - Show the shortest possible chords
 
 -- | Associates a user window, an overlay window created by this module, a rectangle circumscribing
@@ -126,7 +131,12 @@ data Overlay =
           , chord   :: [KeySym]         -- ^ The chord we'll display in the overlay
           }
 
--- | Configuration options for EasyMotion
+-- | Configuration options for EasyMotion. sKeys can come in two forms, [[all keys here]] or [[keys
+--   for screen 1 here],[keys for screen 2 here],...]. In the first form, all keys will be used for
+--   windows on every screen. In the second form, keys will map to screens based on screen
+--   position. If the number of windows for which chords are required exceeds maxChordLen, chords
+--   will simply not be generated for these windows. Thus single-key selection may be preferred
+--   over the ability to select any window.
 data EasyMotionConfig =
   EMConf { txtCol      :: String                             -- ^ Color of the text displayed
          , bgCol       :: String                             -- ^ Color of the window overlaid
@@ -158,13 +168,23 @@ fullSize th = id
 
 -- | Use to create overlay windows a proportion of the size of the window they select
 proportional :: RealFrac f => f -> Position -> Rectangle -> Rectangle
-proportional f th r = do
-  let newW = round $ f * fi (rect_width r)
-      newH = round $ f * fi (rect_height r)
-  Rectangle { rect_width  = newW
-            , rect_height = newH
-            , rect_x      = rect_x r + fi (rect_width r - newW) `div` 2
-            , rect_y      = rect_y r + fi (rect_height r - newH) `div` 2 }
+proportional f th r = Rectangle { rect_width  = newW
+                                , rect_height = newH
+                                , rect_x      = rect_x r + fi (rect_width r - newW) `div` 2
+                                , rect_y      = rect_y r + fi (rect_height r - newH) `div` 2 }
+                                  where
+                                    newH = max (fi th) (round $ f * fi (rect_height r))
+                                    newW = newH
+
+-- | Use to create fixed-size overlay windows
+fixedSize :: (Integral a, Integral b) => a -> b -> Position -> Rectangle -> Rectangle
+fixedSize w h th r = Rectangle { rect_width  = rw
+                               , rect_height = rh
+                               , rect_x      = rect_x r + fi (rect_width r - rw) `div` 2
+                               , rect_y      = rect_y r + fi (rect_height r - rh) `div` 2 }
+                                 where
+                                   rw = max (fi w) (fi th)
+                                   rh = max (fi h) (fi th)
 
 -- | Use to create overlay windows the minimum size to contain their key chord
 textSize :: Position -> Rectangle -> Rectangle
@@ -184,16 +204,6 @@ bar f th r = Rectangle { rect_width  = rect_width r
                          -- as the overlay will be displayed off-screen
                          where f' = min 0.0 $ max f 1.0
 
-showDummy dpy y s = do
-  let r = Rectangle{ rect_width=1920, rect_height=50, rect_x=0, rect_y=y }
-      bgC = "#000000"
-      textC = "#ffffff"
-      brW = 1
-  w <- createNewWindow r Nothing "" True
-  f <- initXMF "xft: Sans-10"
-  showWindow w
-  paintAndWrite w f (fi (rect_width r)) (fi (rect_height r)) (fi brW) bgC bgC textC bgC [AlignCenter] [s]
-
 -- | Handles overlay display and window selection. Called after config has been sanitised.
 handleSelectWindow :: EasyMotionConfig -> X (Maybe Window)
 handleSelectWindow c = do
@@ -201,10 +211,8 @@ handleSelectWindow c = do
   th <- textExtentsXMF f (concatMap keysymToString (concat $ sKeys c)) >>= \(asc, dsc) -> return $ asc + dsc + 2
   XConf { theRoot = rw, display = dpy } <- ask
   XState { mapped = mappedWins, windowset = ws } <- get
-
   let currentW = W.stack . W.workspace . W.current $ ws
-      -- TODO: instead of filtering on `elem` mappedWins, it would be quicker to filter on the
-      -- mapped property of the window; we should do that
+      -- Bucket windows by screen, unless the user has provided only a single list of keys
       winBuckets :: X [[Overlay]]
       winBuckets = sequence $ fmap (sequence . fmap buildOverlay) $
         case sKeys c of
@@ -212,6 +220,7 @@ handleSelectWindow c = do
           _ -> map (L.filter (`elem` mappedWins) . W.integrate' . W.stack . W.workspace) sortedScreens
             where
               sortedScreens = L.sortOn ((rect_x &&& rect_y) . screenRect . W.screenDetail) (W.current ws : W.visible ws)
+      -- Zip window buckets with selection keys, then sort them within screens
       sortedOverlays :: X [[Overlay]]
       sortedOverlays = fmap (zipWith (appendChords (maxChordLen c)) (sKeys c) . fmap (L.sortOn ((wa_x &&& wa_y) . attrs))) winBuckets
       displayF = displayOverlay f (bgCol c) (borderCol c) (txtCol c) (borderPx c)
@@ -221,21 +230,21 @@ handleSelectWindow c = do
         let r = overlayF c th $ makeRect wAttrs
         o <- createNewWindow r Nothing "" True
         return Overlay { rect=r, overlay=o, win=w, attrs=wAttrs }
-
   overlays <- fmap concat sortedOverlays
   status <- io $ grabKeyboard dpy rw True grabModeAsync grabModeAsync currentTime
   case status of
     grabSuccess -> do
-      -- handle keyboard input
       resultWin <- handleKeyboard dpy displayF (cancelKey c) overlays []
       io $ ungrabKeyboard dpy currentTime
       mapM_ (deleteWindow . overlay) overlays
       io $ sync dpy False
-      releaseXMF f -- TODO: do we need to do this when grabSuccess fails?
+      releaseXMF f
       case resultWin of
         Selected o -> return . Just $ win o
         _ -> whenJust currentW (windows . W.focusWindow . W.focus) >> return Nothing -- return focus correctly
-    _  -> return Nothing
+    _  -> do
+      releaseXMF f
+      return Nothing
 
 -- | Display overlay windows and chords for window selection
 selectWindow :: EasyMotionConfig -> X (Maybe Window)
